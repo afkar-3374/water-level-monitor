@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Water Level Monitor & Pump Control</title>
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body { margin:0; font-family:'Segoe UI', sans-serif; background:#1b1f2a; color:#fff; display:flex; flex-direction:column; align-items:center; padding:20px; }
+header { text-align:center; margin-bottom:20px; }
+h1 { font-size:3em; margin:10px 0; }
+.status { display:flex; align-items:center; gap:10px; font-size:1.2em; margin-bottom:20px; }
+.dot { width:15px; height:15px; border-radius:50%; background:#c0392b; }
+.gauge-container { width:250px; height:250px; margin-bottom:30px; }
+canvas { width:100% !important; height:auto !important; }
+.buttons { display:flex; gap:20px; margin-bottom:30px; }
+button { padding:15px 25px; font-size:1em; border:none; border-radius:10px; cursor:pointer; font-weight:bold; color:#fff; transition: transform 0.1s; }
+button:active { transform:scale(0.95); }
+#btnOn { background-color:#27ae60; }
+#btnOff { background-color:#c0392b; }
+footer { margin-top:auto; font-size:12px; opacity:0.6; }
+</style>
+</head>
+<body>
+
+<header>
+<h2>Water Level Monitor & Pump Control</h2>
+<div class="status">
+  <span class="dot" id="statusDot"></span>
+  <span id="statusText">Connecting...</span>
+</div>
+</header>
+
+<div class="gauge-container">
+<canvas id="distanceGauge"></canvas>
+</div>
+
+<h1 id="waterLevel">-- cm</h1>
+
+<div class="buttons">
+  <button id="btnOn">Turn ON Pump</button>
+  <button id="btnOff">Turn OFF Pump</button>
+</div>
+
+<footer>
+MQTT topics: <code>ultrasonic/distance</code> & <code>pump/control</code>
+</footer>
+
+<script>
+const statusDot = document.getElementById("statusDot");
+const statusText = document.getElementById("statusText");
+const waterLevelEl = document.getElementById("waterLevel");
+const btnOn = document.getElementById("btnOn");
+const btnOff = document.getElementById("btnOff");
+
+const ctx = document.getElementById("distanceGauge").getContext("2d");
+const tankHeight = 10; // Tank height in cm
+const gauge = new Chart(ctx, {
+  type:'doughnut',
+  data:{labels:['Water Level','Empty'], datasets:[{data:[0,tankHeight], backgroundColor:['#3498db','#2c3e50'], borderWidth:0}]},
+  options:{responsive:true, rotation:-90, circumference:180, plugins:{legend:{display:false}, tooltip:{enabled:false}}}
+});
+
+// MQTT setup
+const client = mqtt.connect("wss://test.mosquitto.org:8081/mqtt");
+
+function setStatus(connected){
+  statusDot.style.background = connected ? "#27ae60" : "#c0392b";
+  statusText.innerText = connected ? "Connected" : "Disconnected";
+}
+
+client.on("connect", ()=>{
+  setStatus(true);
+  client.subscribe("ultrasonic/distance");
+});
+
+client.on("reconnect", ()=>setStatus(false));
+client.on("close", ()=>setStatus(false));
+client.on("offline", ()=>setStatus(false));
+client.on("error", ()=>setStatus(false));
+
+let lastUpdate = 0;
+let pumpOn = false;  // Auto pump state
+
+client.on("message",(topic,message)=>{
+  if(topic==="ultrasonic/distance"){
+    const now = Date.now();
+    if(now - lastUpdate < 100) return; // throttle updates
+    lastUpdate = now;
+
+    const distance = parseFloat(message.toString());
+    if(!isNaN(distance)){
+      let waterLevel = tankHeight - distance;
+      waterLevel = Math.max(0, Math.min(waterLevel, tankHeight));
+      waterLevelEl.innerText = waterLevel.toFixed(1) + " cm";
+
+      // Update gauge
+      gauge.data.datasets[0].data[0] = waterLevel;
+      gauge.data.datasets[0].data[1] = tankHeight - waterLevel;
+      gauge.update();
+
+      // Auto pump control with threshold 6 cm
+      if(waterLevel < 6 && !pumpOn){        // threshold changed here
+        client.publish("pump/control","LOW"); // turn ON pump
+        pumpOn = true;
+      } else if(waterLevel >= 6 && pumpOn){  // threshold changed here
+        client.publish("pump/control","HIGH"); // turn OFF pump
+        pumpOn = false;
+      }
+    }
+  }
+});
+
+// Manual pump buttons
+btnOn.addEventListener("click",()=>client.publish("pump/control","LOW"));
+btnOff.addEventListener("click",()=>client.publish("pump/control","HIGH"));
+</script>
+</body>
+</html>
